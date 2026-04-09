@@ -1,13 +1,24 @@
 import math
 
+
 def clamp(value, minimum=0, maximum=1000):
     return max(minimum, min(maximum, value))
 
 
-def normalize_ratio(ratio, cap=8.0):
+def soft_score(ratio, exponent=0.5, baseline=1.0):
     if ratio <= 0:
         return 0
-    return math.log1p(ratio) / math.log1p(cap)
+    adjusted = ratio / baseline
+    if adjusted <= 0:
+        return 0
+    return 1000 * (adjusted ** exponent)
+
+
+def damp_high_end(score, ratio, tiers):
+    for threshold, multiplier in tiers:
+        if ratio > threshold:
+            score *= multiplier
+    return score
 
 
 def score_cpu(avg_ops, reference_ops):
@@ -15,9 +26,14 @@ def score_cpu(avg_ops, reference_ops):
         return 0
 
     ratio = avg_ops / reference_ops
-    norm = normalize_ratio(ratio, 6.0)
+    score = soft_score(ratio, exponent=0.42, baseline=0.85)
+    score = damp_high_end(score, ratio, [
+        (2.2, 0.93),
+        (3.0, 0.88),
+        (4.0, 0.82),
+    ])
 
-    return clamp(int(1000 * norm))
+    return clamp(int(score))
 
 
 def score_dev_cpu(avg_time, reference_time):
@@ -25,9 +41,14 @@ def score_dev_cpu(avg_time, reference_time):
         return 0
 
     ratio = reference_time / avg_time
-    norm = normalize_ratio(ratio, 6.0)
+    score = soft_score(ratio, exponent=0.46, baseline=0.90)
+    score = damp_high_end(score, ratio, [
+        (2.0, 0.94),
+        (2.8, 0.88),
+        (3.8, 0.82),
+    ])
 
-    return clamp(int(1000 * norm))
+    return clamp(int(score))
 
 
 def score_memory(latency_spread, reference_spread):
@@ -35,9 +56,14 @@ def score_memory(latency_spread, reference_spread):
         return 0
 
     ratio = reference_spread / latency_spread
-    norm = normalize_ratio(ratio, 5.0)
+    score = soft_score(ratio, exponent=0.62, baseline=0.95)
+    score = damp_high_end(score, ratio, [
+        (1.8, 0.96),
+        (2.5, 0.90),
+        (3.5, 0.84),
+    ])
 
-    return clamp(int(1000 * norm))
+    return clamp(int(score))
 
 
 def score_system(avg_time, reference_time=2.0):
@@ -45,9 +71,14 @@ def score_system(avg_time, reference_time=2.0):
         return 0
 
     ratio = reference_time / avg_time
-    norm = normalize_ratio(ratio, 5.5)
+    score = soft_score(ratio, exponent=0.50, baseline=0.95)
+    score = damp_high_end(score, ratio, [
+        (2.0, 0.94),
+        (2.8, 0.88),
+        (3.8, 0.82),
+    ])
 
-    return clamp(int(1000 * norm))
+    return clamp(int(score))
 
 
 def score_gpu(avg_time, reference_time=1.5, backend="CPU"):
@@ -60,22 +91,22 @@ def score_gpu(avg_time, reference_time=1.5, backend="CPU"):
         return 0
 
     ratio = reference_time / avg_time
-    norm = normalize_ratio(ratio, 10.0)
+    norm = math.log1p(max(ratio, 0)) / math.log1p(12.0)
 
     if backend == "CPU":
-        return clamp(int(350 * norm))
+        return clamp(int(260 * norm), 0, 300)
 
     if backend == "MLX":
-        return clamp(int(1000 * norm * 0.85))
+        return clamp(int(880 * norm))
 
     if backend == "CUDA":
         return clamp(int(1000 * norm))
 
     if backend == "ROCM":
-        return clamp(int(1000 * norm))
+        return clamp(int(970 * norm))
 
     if backend == "DIRECTML":
-        return clamp(int(1000 * norm * 0.90))
+        return clamp(int(820 * norm))
 
     return 0
 
@@ -84,15 +115,15 @@ def overall_score(cpu_score=None, dev_score=None, memory_score=None, system_scor
     parts = []
 
     if cpu_score is not None:
-        parts.append((cpu_score, 0.25))
+        parts.append((cpu_score, 0.28))
     if dev_score is not None:
-        parts.append((dev_score, 0.25))
+        parts.append((dev_score, 0.27))
     if memory_score is not None:
-        parts.append((memory_score, 0.10))
+        parts.append((memory_score, 0.12))
     if system_score is not None:
-        parts.append((system_score, 0.25))
+        parts.append((system_score, 0.23))
     if gpu_score is not None:
-        parts.append((gpu_score, 0.15))
+        parts.append((gpu_score, 0.10))
 
     if not parts:
         return 0
@@ -108,16 +139,14 @@ def overall_score(cpu_score=None, dev_score=None, memory_score=None, system_scor
         cores = system_info.get("cpu_cores", 0) or 0
 
         if ram_gb < 16:
-            penalty += 0.18
+            penalty += 0.10
         elif ram_gb < 24:
-            penalty += 0.12
-        elif ram_gb < 32:
             penalty += 0.05
 
-        if cores < 8:
+        if cores < 6:
             penalty += 0.10
-        elif cores < 12:
-            penalty += 0.06
+        elif cores < 8:
+            penalty += 0.05
 
     final = base_score * (1 - penalty)
     return clamp(int(final))
@@ -155,46 +184,52 @@ def category_score(name, cpu=None, dev=None, memory=None, system=None, gpu=None,
             total_weight += weight
 
     real_gpu_available = (
-        gpu is not None and gpu > 250 and gpu_ran and gpu_backend not in ("", "CPU")
+        gpu is not None
+        and gpu >= 320
+        and gpu_ran
+        and gpu_backend not in ("", "CPU")
     )
 
     if name == "mobile":
-        add(cpu, 0.5)
-        add(dev, 0.5)
+        add(cpu, 0.52)
+        add(dev, 0.48)
 
     elif name == "backend":
-        add(cpu, 0.45)
+        add(cpu, 0.40)
         add(dev, 0.35)
-        add(memory, 0.20)
+        add(memory, 0.10)
+        add(system, 0.15)
 
     elif name == "ai":
         if real_gpu_available:
-            add(gpu, 0.40)
-            add(memory, 0.25)
-            add(system, 0.20)
-            add(cpu, 0.15)
+            add(gpu, 0.42)
+            add(memory, 0.22)
+            add(system, 0.16)
+            add(cpu, 0.12)
+            add(dev, 0.08)
         else:
-            add(cpu, 0.35)
-            add(memory, 0.30)
-            add(system, 0.25)
-            add(dev, 0.10)
+            add(cpu, 0.38)
+            add(memory, 0.22)
+            add(system, 0.20)
+            add(dev, 0.20)
 
     elif name == "systems":
-        add(cpu, 0.30)
-        add(system, 0.35)
+        add(cpu, 0.28)
+        add(system, 0.34)
         add(memory, 0.20)
-        add(dev, 0.15)
+        add(dev, 0.18)
 
     elif name == "data":
-        add(memory, 0.45)
-        add(system, 0.35)
+        add(memory, 0.36)
+        add(system, 0.29)
         add(cpu, 0.20)
+        add(dev, 0.15)
 
     elif name == "devops":
         add(cpu, 0.30)
-        add(system, 0.25)
-        add(memory, 0.25)
-        add(dev, 0.20)
+        add(system, 0.24)
+        add(memory, 0.20)
+        add(dev, 0.26)
 
     if total_weight == 0:
         return 0
@@ -202,7 +237,7 @@ def category_score(name, cpu=None, dev=None, memory=None, system=None, gpu=None,
     score = clamp(int(sum(parts) / total_weight))
 
     if name == "ai" and not real_gpu_available:
-        score = min(score, 900)
+        score = min(score, 780)
 
     return score
 
