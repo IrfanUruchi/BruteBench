@@ -20,18 +20,22 @@ def damp_high_end(score, ratio, tiers):
             score *= multiplier
     return score
 
-
 def score_cpu(avg_ops, reference_ops):
     if avg_ops <= 0 or reference_ops <= 0:
         return 0
 
     ratio = avg_ops / reference_ops
-    score = soft_score(ratio, exponent=0.42, baseline=0.85)
-    score = damp_high_end(score, ratio, [
-        (2.2, 0.93),
-        (3.0, 0.88),
-        (4.0, 0.82),
-    ])
+
+    score = 1000 * (ratio ** 0.30)
+
+    if ratio > 1.4:
+        score *= 0.94
+    if ratio > 2.0:
+        score *= 0.86
+    if ratio > 2.8:
+        score *= 0.78
+    if ratio > 3.5:
+        score *= 0.70
 
     return clamp(int(score))
 
@@ -41,12 +45,15 @@ def score_dev_cpu(avg_time, reference_time):
         return 0
 
     ratio = reference_time / avg_time
-    score = soft_score(ratio, exponent=0.46, baseline=0.90)
-    score = damp_high_end(score, ratio, [
-        (2.0, 0.94),
-        (2.8, 0.88),
-        (3.8, 0.82),
-    ])
+
+    score = 1000 * (ratio ** 0.32)
+
+    if ratio > 1.5:
+        score *= 0.95
+    if ratio > 2.2:
+        score *= 0.87
+    if ratio > 3.0:
+        score *= 0.78
 
     return clamp(int(score))
 
