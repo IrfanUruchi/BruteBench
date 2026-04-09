@@ -33,7 +33,6 @@ def score_dev_cpu(avg_time, reference_time):
 
     return clamp(int(score))
 
-
 def score_memory(latency_spread, reference_spread):
     if latency_spread <= 0 or reference_spread <= 0:
         return 0
@@ -42,6 +41,7 @@ def score_memory(latency_spread, reference_spread):
     score = 1000 * (ratio ** 0.9)
 
     return clamp(int(score))
+
 
 
 def score_system(avg_time, reference_time=2.0):
@@ -57,7 +57,6 @@ def score_system(avg_time, reference_time=2.0):
         score *= 0.85
 
     return clamp(int(score))
-
 
 def score_gpu(avg_time, reference_time=1.5, backend="CPU"):
     if avg_time <= 0 or reference_time <= 0:
@@ -91,7 +90,6 @@ def score_gpu(avg_time, reference_time=1.5, backend="CPU"):
         return clamp(int(score))
 
     return 0
-
 
 def overall_score(cpu_score=None, dev_score=None, memory_score=None, system_score=None, gpu_score=None, system_info=None):
     parts = []
@@ -134,8 +132,7 @@ def overall_score(cpu_score=None, dev_score=None, memory_score=None, system_scor
 
     final = base_score * (1 - penalty)
     return clamp(int(final))
-
-
+    
 def rating_label(score):
     if score >= 970:
         return "EXTREME"
@@ -153,77 +150,74 @@ def rating_label(score):
         return "LIMITED"
     return "STRAINED"
 
-
 def category_score(name, cpu=None, dev=None, memory=None, system=None, gpu=None, gpu_backend=None, gpu_ran=True):
-    """
-    Category scoring with proper missing-value handling.
-    AI category:
-    - if GPU really ran -> use GPU
-    - if GPU did not run / fallback only -> shift weight toward CPU/system/memory
-    """
     name = (name or "").lower().strip()
     gpu_backend = (gpu_backend or "").upper().strip()
 
     parts = []
     total_weight = 0.0
 
-    def add_part(value, weight):
+    def add(value, weight):
         nonlocal total_weight
         if value is not None:
             parts.append(value * weight)
             total_weight += weight
 
+    real_gpu_available = (
+        gpu is not None
+        and gpu > 200
+        and gpu_ran
+        and gpu_backend not in ("", "CPU")
+    )
+
     if name == "mobile":
-        add_part(cpu, 0.45)
-        add_part(dev, 0.45)
+        add(cpu, 0.45)
+        add(dev, 0.45)
 
     elif name == "backend":
-        add_part(cpu, 0.40)
-        add_part(dev, 0.40)
-        add_part(memory, 0.20)
+        add(cpu, 0.40)
+        add(dev, 0.40)
+        add(memory, 0.20)
 
     elif name == "ai":
-        real_gpu_available = (
-            gpu is not None
-            and gpu > 0
-            and gpu_ran
-            and gpu_backend not in ("", "CPU")
-        )
-
         if real_gpu_available:
-            add_part(memory, 0.35)
-            add_part(system, 0.25)
-            add_part(cpu, 0.10)
-            add_part(gpu, 0.30)
+            add(memory, 0.35)
+            add(system, 0.25)
+            add(cpu, 0.10)
+            add(gpu, 0.30)
         else:
-        
-            add_part(cpu, 0.35)
-            add_part(memory, 0.35)
-            add_part(system, 0.20)
-            add_part(dev, 0.10)
+
+            add(cpu, 0.30)
+            add(memory, 0.30)
+            add(system, 0.25)
+            add(dev, 0.15)
 
     elif name == "systems":
-        add_part(cpu, 0.30)
-        add_part(dev, 0.20)
-        add_part(memory, 0.20)
-        add_part(system, 0.30)
+        add(cpu, 0.30)
+        add(dev, 0.20)
+        add(memory, 0.20)
+        add(system, 0.30)
 
     elif name == "data":
-        add_part(cpu, 0.20)
-        add_part(memory, 0.40)
-        add_part(system, 0.40)
+        add(cpu, 0.20)
+        add(memory, 0.40)
+        add(system, 0.40)
 
     elif name == "devops":
-        add_part(cpu, 0.30)
-        add_part(dev, 0.20)
-        add_part(memory, 0.30)
-        add_part(system, 0.20)
+        add(cpu, 0.30)
+        add(dev, 0.20)
+        add(memory, 0.30)
+        add(system, 0.20)
 
     if total_weight == 0:
         return 0
 
-    return clamp(int(sum(parts) / total_weight))
+    score = clamp(int(sum(parts) / total_weight))
 
+    if name == "ai" and not real_gpu_available:
+        score = min(score, 920)
+
+    return score
 
 def category_label(score):
     if score >= 950:
