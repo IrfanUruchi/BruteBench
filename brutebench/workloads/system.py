@@ -15,10 +15,11 @@ from brutebench.workloads.base import Workload
 class SystemWorkload(Workload):
     name = "system"
 
-    def __init__(self, rounds=3, file_count=18, payload_kb=20):
+    def __init__(self, rounds=3, file_count=18, payload_kb=20, target_seconds=1.0):
         self.rounds = rounds
         self.file_count = file_count
         self.payload_kb = payload_kb
+        self.target_seconds = max(0.25, target_seconds)
 
     def _write_round_files(self, root, round_index):
         total_bytes = 0
@@ -94,6 +95,7 @@ class SystemWorkload(Workload):
         times = []
         throughput = []
         checksums = []
+        batch_counts = []
 
         for round_index in range(self.rounds):
             log(f"Round {round_index + 1}/{self.rounds}")
@@ -101,17 +103,34 @@ class SystemWorkload(Workload):
             with tempfile.TemporaryDirectory(prefix="brutebench-system-") as tempdir:
                 root = Path(tempdir)
                 start = perf_counter()
-                written_bytes = self._write_round_files(root, round_index)
-                processed_bytes, token_count, checksum = self._process_round_files(root)
+                written_bytes = 0
+                processed_bytes = 0
+                token_count = 0
+                digest_value = 0
+                batch_index = 0
+
+                while True:
+                    written_bytes += self._write_round_files(root, round_index + batch_index)
+                    batch_processed_bytes, batch_token_count, checksum = self._process_round_files(root)
+                    processed_bytes += batch_processed_bytes
+                    token_count += batch_token_count
+                    digest_value ^= int(checksum[:8], 16)
+                    batch_index += 1
+
+                    duration = perf_counter() - start
+                    if duration >= self.target_seconds:
+                        break
+
                 duration = perf_counter() - start
 
             times.append(duration)
-            checksums.append(int(checksum[:8], 16))
+            batch_counts.append(batch_index)
+            checksums.append(digest_value)
             total_mb = (written_bytes + processed_bytes) / (1024 * 1024)
             ops = total_mb / duration if duration > 0 else 0.0
             throughput.append(ops)
 
-            log(f"  {duration:.2f}s | {ops:.2f} MB/s | tokens {token_count}")
+            log(f"  {duration:.2f}s | {ops:.2f} MB/s | tokens {token_count} | batches {batch_index}")
 
         avg_time = mean(times)
         avg_ops = mean(throughput)
@@ -124,5 +143,7 @@ class SystemWorkload(Workload):
             "min_time": min(times),
             "max_time": max(times),
             "stability": stability,
+            "target_seconds": self.target_seconds,
+            "avg_batches": mean(batch_counts),
             "checksum": sum(checksums),
         }

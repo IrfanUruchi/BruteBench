@@ -8,10 +8,11 @@ from brutebench.workloads.base import Workload
 class GPUWorkload(Workload):
     name = "gpu"
 
-    def __init__(self, rounds=3, size=128, iters=4):
+    def __init__(self, rounds=3, size=128, iters=4, target_seconds=1.2):
         self.rounds = rounds
         self.size = size
         self.iters = iters
+        self.target_seconds = max(0.25, target_seconds)
 
     def _ops_per_run(self, size, iterations):
         return (2 * (size ** 3) * iterations) / 1_000_000_000
@@ -26,6 +27,7 @@ class GPUWorkload(Workload):
         try:
             device = mx.default_device()
             times = []
+            gflops = []
 
             for round_index in range(self.rounds):
                 log(f"Round {round_index + 1}/{self.rounds} · MLX · {device}")
@@ -36,16 +38,26 @@ class GPUWorkload(Workload):
                 mx.eval(warmup)
 
                 start = perf_counter()
-                c = a
-                for _ in range(self.iters):
-                    c = mx.matmul(c, b)
-                mx.eval(c)
+                completed_runs = 0
+
+                while True:
+                    c = a
+                    for _ in range(self.iters):
+                        c = mx.matmul(c, b)
+                    mx.eval(c)
+                    completed_runs += 1
+
+                    duration = perf_counter() - start
+                    if duration >= self.target_seconds:
+                        break
 
                 duration = perf_counter() - start
+                round_gflops = (self._ops_per_run(self.size, self.iters) * completed_runs) / duration
                 times.append(duration)
-                log(f"  {duration:.2f}s")
+                gflops.append(round_gflops)
+                log(f"  {duration:.2f}s | {round_gflops:.2f} GFLOPS")
 
-            return times, self.size, self.iters, "MLX", True
+            return times, gflops, self.size, self.iters, "MLX", True
         except Exception as e:
             log(f"MLX execution failed: {e}")
             return None
@@ -63,6 +75,7 @@ class GPUWorkload(Workload):
 
         device = torch.device("cuda")
         times = []
+        gflops = []
 
         for round_index in range(self.rounds):
             log(f"Round {round_index + 1}/{self.rounds} · CUDA · {device}")
@@ -73,16 +86,26 @@ class GPUWorkload(Workload):
             torch.cuda.synchronize()
 
             start = perf_counter()
-            c = a
-            for _ in range(self.iters):
-                c = torch.matmul(c, b)
-            torch.cuda.synchronize()
+            completed_runs = 0
+
+            while True:
+                c = a
+                for _ in range(self.iters):
+                    c = torch.matmul(c, b)
+                torch.cuda.synchronize()
+                completed_runs += 1
+
+                duration = perf_counter() - start
+                if duration >= self.target_seconds:
+                    break
 
             duration = perf_counter() - start
+            round_gflops = (self._ops_per_run(self.size, self.iters) * completed_runs) / duration
             times.append(duration)
-            log(f"  {duration:.2f}s")
+            gflops.append(round_gflops)
+            log(f"  {duration:.2f}s | {round_gflops:.2f} GFLOPS")
 
-        return times, self.size, self.iters, "CUDA", True
+        return times, gflops, self.size, self.iters, "CUDA", True
 
     def _run_mps(self):
         try:
@@ -97,6 +120,7 @@ class GPUWorkload(Workload):
 
         device = torch.device("mps")
         times = []
+        gflops = []
 
         for round_index in range(self.rounds):
             log(f"Round {round_index + 1}/{self.rounds} · MPS · {device}")
@@ -108,17 +132,27 @@ class GPUWorkload(Workload):
                 torch.mps.synchronize()
 
             start = perf_counter()
-            c = a
-            for _ in range(self.iters):
-                c = torch.matmul(c, b)
-            if hasattr(torch.mps, "synchronize"):
-                torch.mps.synchronize()
+            completed_runs = 0
+
+            while True:
+                c = a
+                for _ in range(self.iters):
+                    c = torch.matmul(c, b)
+                if hasattr(torch.mps, "synchronize"):
+                    torch.mps.synchronize()
+                completed_runs += 1
+
+                duration = perf_counter() - start
+                if duration >= self.target_seconds:
+                    break
 
             duration = perf_counter() - start
+            round_gflops = (self._ops_per_run(self.size, self.iters) * completed_runs) / duration
             times.append(duration)
-            log(f"  {duration:.2f}s")
+            gflops.append(round_gflops)
+            log(f"  {duration:.2f}s | {round_gflops:.2f} GFLOPS")
 
-        return times, self.size, self.iters, "MPS", True
+        return times, gflops, self.size, self.iters, "MPS", True
 
     def _run_numpy(self):
         try:
@@ -130,6 +164,7 @@ class GPUWorkload(Workload):
         size = max(48, self.size)
         iterations = max(2, self.iters)
         times = []
+        gflops = []
 
         for round_index in range(self.rounds):
             log(f"Round {round_index + 1}/{self.rounds} · NumPy fallback")
@@ -139,20 +174,31 @@ class GPUWorkload(Workload):
             _ = np.matmul(a, b)
 
             start = perf_counter()
-            c = a
-            for _ in range(iterations):
-                c = np.matmul(c, b)
+            completed_runs = 0
+
+            while True:
+                c = a
+                for _ in range(iterations):
+                    c = np.matmul(c, b)
+                completed_runs += 1
+
+                duration = perf_counter() - start
+                if duration >= self.target_seconds:
+                    break
 
             duration = perf_counter() - start
+            round_gflops = (self._ops_per_run(size, iterations) * completed_runs) / duration
             times.append(duration)
-            log(f"  {duration:.2f}s")
+            gflops.append(round_gflops)
+            log(f"  {duration:.2f}s | {round_gflops:.2f} GFLOPS")
 
-        return times, size, iterations, "NumPy", False
+        return times, gflops, size, iterations, "NumPy", False
 
     def _run_python(self):
         size = max(24, min(48, self.size // 2))
         iterations = max(3, min(6, self.iters + 1))
         times = []
+        gflops = []
 
         base_a = [[((row + col) % 11) / 10 for col in range(size)] for row in range(size)]
         base_b = [[((row * 2 + col) % 13) / 10 for col in range(size)] for row in range(size)]
@@ -162,15 +208,26 @@ class GPUWorkload(Workload):
             log(f"Round {round_index + 1}/{self.rounds} · Python fallback")
             start = perf_counter()
             checksum = 0.0
-            for _ in range(iterations):
-                for row in base_a:
-                    for col in base_bt:
-                        checksum += sum(left * right for left, right in zip(row, col))
-            duration = perf_counter() - start
-            times.append(duration)
-            log(f"  {duration:.2f}s | checksum {int(checksum)}")
+            completed_runs = 0
 
-        return times, size, iterations, "Python", False
+            while True:
+                for _ in range(iterations):
+                    for row in base_a:
+                        for col in base_bt:
+                            checksum += sum(left * right for left, right in zip(row, col))
+                completed_runs += 1
+
+                duration = perf_counter() - start
+                if duration >= self.target_seconds:
+                    break
+
+            duration = perf_counter() - start
+            round_gflops = (self._ops_per_run(size, iterations) * completed_runs) / duration
+            times.append(duration)
+            gflops.append(round_gflops)
+            log(f"  {duration:.2f}s | {round_gflops:.2f} GFLOPS | checksum {int(checksum)}")
+
+        return times, gflops, size, iterations, "Python", False
 
     def run(self):
         log("Starting GPU workload")
@@ -206,9 +263,8 @@ class GPUWorkload(Workload):
                 "iters": 0,
             }
 
-        times, size, iterations, backend, accelerated = result
+        times, gflops, size, iterations, backend, accelerated = result
         avg_time = mean(times)
-        gflops = self._ops_per_run(size, iterations) / avg_time if avg_time > 0 else 0.0
 
         return {
             "avg_time": avg_time,
@@ -216,8 +272,9 @@ class GPUWorkload(Workload):
             "max_time": max(times),
             "backend": backend,
             "rounds": len(times),
-            "avg_gflops": gflops,
+            "avg_gflops": mean(gflops),
             "accelerated": accelerated,
             "size": size,
             "iters": iterations,
+            "target_seconds": self.target_seconds,
         }

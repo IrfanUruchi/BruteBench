@@ -12,9 +12,10 @@ from brutebench.workloads.base import Workload
 class DevCPUWorkload(Workload):
     name = "dev_cpu"
 
-    def __init__(self, rounds=4, iterations=700, dataset_size=24):
+    def __init__(self, rounds=4, iterations=700, dataset_size=24, target_seconds=1.0):
         self.rounds = rounds
         self.iterations = iterations
+        self.target_seconds = max(0.25, target_seconds)
         self.pattern = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
         self.payloads = [self._build_payload(index) for index in range(dataset_size)]
 
@@ -80,23 +81,32 @@ class DevCPUWorkload(Workload):
         times = []
         ops_per_second = []
         checksums = []
+        task_counts = []
 
         for round_index in range(self.rounds):
             log(f"Round {round_index + 1}/{self.rounds}")
 
             start = perf_counter()
             checksum = 0
+            completed_tasks = 0
 
-            for iteration in range(self.iterations):
-                checksum += self.single_task(iteration + round_index)
+            while True:
+                for iteration in range(self.iterations):
+                    checksum += self.single_task(completed_tasks + iteration + round_index)
+
+                completed_tasks += self.iterations
+                duration = perf_counter() - start
+                if duration >= self.target_seconds:
+                    break
 
             duration = perf_counter() - start
             times.append(duration)
             checksums.append(checksum)
-            ops = self.iterations / duration if duration > 0 else 0
+            task_counts.append(completed_tasks)
+            ops = completed_tasks / duration if duration > 0 else 0
             ops_per_second.append(ops)
 
-            log(f"  {duration:.2f}s | {int(ops)} tasks/sec")
+            log(f"  {duration:.2f}s | {int(ops)} tasks/sec | tasks {completed_tasks}")
 
         avg_time = mean(times)
         avg_ops = mean(ops_per_second)
@@ -109,5 +119,7 @@ class DevCPUWorkload(Workload):
             "stability": stability,
             "min_time": min(times),
             "max_time": max(times),
+            "target_seconds": self.target_seconds,
+            "avg_tasks": mean(task_counts),
             "checksum": sum(checksums),
         }

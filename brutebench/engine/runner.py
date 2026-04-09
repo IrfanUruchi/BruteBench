@@ -60,8 +60,11 @@ def _device_summary(system_info, plan):
 
     gpu_devices = system_info.get("gpu_devices") or []
     accelerators = system_info.get("accelerators") or []
+    accelerator_hints = system_info.get("accelerator_hints") or []
     print(f"GPU        {', '.join(gpu_devices) if gpu_devices else 'No dedicated GPU detected'}")
     print(f"Accel      {', '.join(accelerators) if accelerators else 'No GPU runtime detected'}")
+    if accelerator_hints and not accelerators:
+        print(f"GPU Hint   {', '.join(accelerator_hints)} hardware available")
     print(f"Tier       {plan['device_class']} ({plan['device_scale']:.2f}x benchmark scale)")
 
 
@@ -81,8 +84,18 @@ def _latency_behavior(spread):
     return "Variable"
 
 
-def _system_suggestion(weakest):
+def _system_suggestion(weakest, system_info=None):
     if weakest == "AI":
+        accelerator_hints = set((system_info or {}).get("accelerator_hints") or [])
+        accelerators = set((system_info or {}).get("accelerators") or [])
+
+        if accelerator_hints and not accelerators:
+            if "METAL" in accelerator_hints:
+                return "Install MLX or PyTorch MPS support so Apple GPU acceleration is measured directly"
+            if "CUDA" in accelerator_hints:
+                return "Install the CUDA runtime stack so GPU acceleration is measured directly"
+            if "ROCM" in accelerator_hints:
+                return "Install the ROCm runtime stack so GPU acceleration is measured directly"
         return "Increase accelerator support or memory capacity for heavier ML workloads"
     if weakest == "Data":
         return "Improve memory bandwidth and storage throughput for data-heavy workflows"
@@ -93,6 +106,22 @@ def _system_suggestion(weakest):
     if weakest == "Backend":
         return "Faster CPU throughput will help with compile and service workloads"
     return "System balance looks solid for everyday development"
+
+
+def _gpu_runtime_note(system_info, accelerated):
+    if accelerated:
+        return None
+
+    hints = set(system_info.get("accelerator_hints") or [])
+
+    if "METAL" in hints:
+        return "Apple GPU detected, but MLX/MPS runtime was not available, so AI scoring used CPU-side fallback"
+    if "CUDA" in hints:
+        return "CUDA-capable hardware detected, but the CUDA runtime was not available, so AI scoring used CPU-side fallback"
+    if "ROCM" in hints:
+        return "AMD GPU hardware detected, but the ROCm runtime was not available, so AI scoring used CPU-side fallback"
+
+    return "No accelerated GPU runtime was available, so AI scoring used CPU-side fallback"
 
 
 def run_benchmark(args):
@@ -143,6 +172,7 @@ def run_benchmark(args):
                     units=plan["cpu_units"],
                     span=plan["cpu_span"],
                     processes=plan["cpu_processes"],
+                    target_seconds=plan["cpu_target_seconds"],
                 ).execute()
 
                 cpu_score_value = score_cpu(
@@ -157,6 +187,8 @@ def run_benchmark(args):
                 print(f"Workers   {result['processes']}")
                 print(f"Stability {result['stability']:.1f}%")
                 print(f"Score     {cpu_score_value}")
+                if result.get("execution_mode") != "process":
+                    print("Note      Restricted environment forced threaded CPU fallback, so this CPU score is conservative")
 
                 result["score"] = cpu_score_value
                 result_store.add("cpu", result)
@@ -167,6 +199,7 @@ def run_benchmark(args):
                     target_mb=plan["memory_target_mb"],
                     chunk_mb=plan["memory_chunk_mb"],
                     floor_mb=plan["memory_floor_mb"],
+                    touch_passes=plan["memory_touch_passes"],
                 ).execute()
 
                 spread = result["latency_spread"]
@@ -196,6 +229,7 @@ def run_benchmark(args):
                 result = DevCPUWorkload(
                     rounds=plan["dev_rounds"],
                     iterations=plan["dev_iterations"],
+                    target_seconds=plan["dev_target_seconds"],
                 ).execute()
 
                 spread = result["max_time"] / result["min_time"] if result["min_time"] > 0 else 1.0
@@ -221,6 +255,7 @@ def run_benchmark(args):
                     rounds=plan["system_rounds"],
                     file_count=plan["system_files"],
                     payload_kb=plan["system_payload_kb"],
+                    target_seconds=plan["system_target_seconds"],
                 ).execute()
 
                 system_score_value = score_system(
@@ -244,6 +279,7 @@ def run_benchmark(args):
                     rounds=plan["gpu_rounds"],
                     size=plan["gpu_size"],
                     iters=plan["gpu_iters"],
+                    target_seconds=plan["gpu_target_seconds"],
                 ).execute()
 
                 gpu_score_value = score_gpu(
@@ -262,6 +298,11 @@ def run_benchmark(args):
                 print(f"GFLOPS    {result['avg_gflops']:.3f}")
                 print(f"Score     {gpu_score_value}")
 
+                runtime_note = _gpu_runtime_note(system_info, result["accelerated"])
+                if runtime_note:
+                    print(f"Note      {runtime_note}")
+                    result["runtime_note"] = runtime_note
+
                 result["score"] = gpu_score_value
                 result_store.add("gpu", result)
 
@@ -272,6 +313,9 @@ def run_benchmark(args):
             system_score=system_score_value,
             gpu_score=gpu_score_value,
             system_info=system_info,
+            gpu_accelerated=bool(
+                result_store.data.get("gpu", {}).get("accelerated")
+            ),
         )
 
         result_store.add(
@@ -291,6 +335,8 @@ def run_benchmark(args):
             all_scores.append(final_score)
 
             if show_categories:
+                gpu_accelerated = bool(result_store.data.get("gpu", {}).get("accelerated"))
+
                 category_totals["mobile"] += category_score("mobile", cpu=cpu_score_value, dev=dev_score_value)
                 category_totals["backend"] += category_score(
                     "backend",
@@ -312,12 +358,16 @@ def run_benchmark(args):
                     memory=memory_score_value,
                     system=system_score_value,
                     gpu=gpu_score_value,
+                    gpu_accelerated=gpu_accelerated,
                 )
                 category_totals["llm"] += category_score(
                     "ai",
+                    cpu=cpu_score_value,
+                    dev=dev_score_value,
                     memory=memory_score_value,
                     system=system_score_value,
                     gpu=gpu_score_value,
+                    gpu_accelerated=gpu_accelerated,
                 )
                 category_totals["devops"] += category_score(
                     "devops",
@@ -374,4 +424,4 @@ def run_benchmark(args):
 
     print(f"Strongest Area: {strongest}")
     print(f"Bottleneck: {weakest}")
-    print(f"Suggestion: {_system_suggestion(weakest)}")
+    print(f"Suggestion: {_system_suggestion(weakest, system_info=system_info)}")

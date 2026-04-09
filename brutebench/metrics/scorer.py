@@ -79,13 +79,21 @@ def score_gpu(avg_gflops, accelerated=False, reference_gflops_accelerated=250, r
     return clamp(int(score))
 
 
-def overall_score(cpu_score=None, dev_score=None, memory_score=None, system_score=None, gpu_score=None, system_info=None):
+def overall_score(
+    cpu_score=None,
+    dev_score=None,
+    memory_score=None,
+    system_score=None,
+    gpu_score=None,
+    system_info=None,
+    gpu_accelerated=False,
+):
     base = _blend([
-        (cpu_score, 0.24),
-        (dev_score, 0.20),
-        (memory_score, 0.18),
-        (system_score, 0.23),
-        (gpu_score, 0.15),
+        (cpu_score, 0.28),
+        (dev_score, 0.22),
+        (memory_score, 0.22),
+        (system_score, 0.24),
+        (gpu_score, 0.16 if gpu_accelerated else 0.04),
     ])
 
     if base <= 0:
@@ -132,7 +140,7 @@ def rating_label(score):
     return "STRAINED"
 
 
-def category_score(name, cpu=None, dev=None, memory=None, system=None, gpu=None):
+def category_score(name, cpu=None, dev=None, memory=None, system=None, gpu=None, gpu_accelerated=False):
     if name == "mobile":
         return _blend([(cpu, 0.5), (dev, 0.5)])
 
@@ -140,13 +148,17 @@ def category_score(name, cpu=None, dev=None, memory=None, system=None, gpu=None)
         return _blend([(cpu, 0.35), (dev, 0.35), (memory, 0.15), (system, 0.15)])
 
     if name == "ai":
-        return _blend([(memory, 0.2), (system, 0.15), (gpu, 0.65)])
+        if gpu_accelerated:
+            return _blend([(gpu, 0.55), (memory, 0.20), (system, 0.15), (cpu, 0.07), (dev, 0.03)])
+        return _blend([(cpu, 0.24), (dev, 0.12), (memory, 0.34), (system, 0.30)])
 
     if name == "systems":
         return _blend([(cpu, 0.25), (dev, 0.15), (memory, 0.2), (system, 0.4)])
 
     if name == "data":
-        return _blend([(cpu, 0.15), (memory, 0.4), (system, 0.3), (gpu, 0.15)])
+        if gpu_accelerated:
+            return _blend([(cpu, 0.15), (memory, 0.35), (system, 0.30), (gpu, 0.20)])
+        return _blend([(cpu, 0.18), (memory, 0.44), (system, 0.38)])
 
     if name == "devops":
         return _blend([(cpu, 0.25), (dev, 0.2), (memory, 0.25), (system, 0.3)])

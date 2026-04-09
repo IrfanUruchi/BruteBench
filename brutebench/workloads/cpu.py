@@ -53,16 +53,21 @@ def cpu_worker(task):
 class CPUWorkload(Workload):
     name = "cpu"
 
-    def __init__(self, rounds=4, units=12, span=480, processes=None):
+    def __init__(self, rounds=4, units=12, span=480, processes=None, target_seconds=1.0):
         self.rounds = rounds
         self.units = units
         self.span = span
         self.processes = max(1, processes or (mp.cpu_count() or 1))
+        self.target_seconds = max(0.25, target_seconds)
 
-    def _tasks(self):
+    def _tasks(self, batch_index=0):
         stride = self.units * self.span * 2
         return [
-            (self.units, self.span, 10_000 + (worker_index * stride))
+            (
+                self.units,
+                self.span,
+                10_000 + ((batch_index * self.processes + worker_index) * stride),
+            )
             for worker_index in range(self.processes)
         ]
 
@@ -70,7 +75,8 @@ class CPUWorkload(Workload):
         times = []
         ops_per_second = []
         checksums = []
-        total_work = self.units * self.span * self.processes
+        total_work_per_batch = self.units * self.span * self.processes
+        batch_counts = []
 
         with executor_factory(max_workers=self.processes, **executor_kwargs) as executor:
             warmup_tasks = [(1, max(64, self.span // 3), 2_000 + index) for index in range(self.processes)]
@@ -79,17 +85,29 @@ class CPUWorkload(Workload):
             for round_index in range(self.rounds):
                 log(f"Round {round_index + 1}/{self.rounds}")
                 start = perf_counter()
-                round_checksums = list(executor.map(cpu_worker, self._tasks()))
-                duration = perf_counter() - start
+                batch_index = 0
+                round_checksum = 0
+                round_work = 0
 
-                checksums.append(sum(round_checksums))
+                while True:
+                    round_checksums = list(executor.map(cpu_worker, self._tasks(batch_index)))
+                    round_checksum += sum(round_checksums)
+                    round_work += total_work_per_batch
+                    batch_index += 1
+
+                    duration = perf_counter() - start
+                    if duration >= self.target_seconds:
+                        break
+
+                batch_counts.append(batch_index)
+                checksums.append(round_checksum)
                 times.append(duration)
-                ops = total_work / duration if duration > 0 else 0
+                ops = round_work / duration if duration > 0 else 0
                 ops_per_second.append(ops)
 
-                log(f"  {duration:.2f}s | {int(ops)} ops/sec")
+                log(f"  {duration:.2f}s | {int(ops)} ops/sec | batches {batch_index}")
 
-        return times, ops_per_second, checksums
+        return times, ops_per_second, checksums, batch_counts
 
     def run(self):
         log(
@@ -99,13 +117,15 @@ class CPUWorkload(Workload):
 
         try:
             context = mp.get_context("spawn")
-            times, ops_per_second, checksums = self._run_with_executor(
+            execution_mode = "process"
+            times, ops_per_second, checksums, batch_counts = self._run_with_executor(
                 ProcessPoolExecutor,
                 mp_context=context,
             )
         except Exception as error:
             log(f"Process workers unavailable ({error}); falling back to threaded execution")
-            times, ops_per_second, checksums = self._run_with_executor(ThreadPoolExecutor)
+            execution_mode = "thread"
+            times, ops_per_second, checksums, batch_counts = self._run_with_executor(ThreadPoolExecutor)
 
         avg_time = mean(times)
         avg_ops = mean(ops_per_second)
@@ -121,5 +141,8 @@ class CPUWorkload(Workload):
             "processes": self.processes,
             "units": self.units,
             "span": self.span,
+            "target_seconds": self.target_seconds,
+            "avg_batches": mean(batch_counts),
+            "execution_mode": execution_mode,
             "checksum": sum(checksums),
         }

@@ -1,4 +1,4 @@
-from statistics import mean, pstdev
+from statistics import mean, median, pstdev
 from time import perf_counter
 
 from brutebench.system.info import get_memory_snapshot
@@ -9,10 +9,19 @@ from brutebench.workloads.base import Workload
 class MemoryWorkload(Workload):
     name = "memory"
 
-    def __init__(self, target_mb=256, chunk_mb=16, floor_mb=384):
+    def __init__(self, target_mb=256, chunk_mb=16, floor_mb=384, touch_passes=8):
         self.target_mb = max(16, target_mb)
         self.chunk_mb = max(4, chunk_mb)
         self.floor_mb = max(128, floor_mb)
+        self.touch_passes = max(2, touch_passes)
+
+    def _percentile(self, values, ratio):
+        if not values:
+            return 0.0
+
+        ordered = sorted(values)
+        index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * ratio))))
+        return ordered[index]
 
     def run(self):
         log(
@@ -58,7 +67,7 @@ class MemoryWorkload(Workload):
 
             start = perf_counter()
             checksum = 0
-            for pass_index in range(4):
+            for pass_index in range(self.touch_passes):
                 for index in range(0, size, 4096):
                     checksum ^= block[index]
                     block[index] = (block[index] + pass_index + 7) % 251
@@ -78,7 +87,9 @@ class MemoryWorkload(Workload):
         avg_access_time = mean(access_times) if access_times else 0.0
         min_time = min(combined_times) if combined_times else 0.0
         max_time = max(combined_times) if combined_times else 0.0
-        latency_spread = (max_time / min_time) if min_time > 0 else 1.0
+        p50_time = median(combined_times) if combined_times else 0.0
+        p95_time = self._percentile(combined_times, 0.95)
+        latency_spread = (p95_time / p50_time) if p50_time > 0 else 1.0
         total_time = sum(combined_times)
         total_mb = allocated_bytes / (1024 * 1024)
         throughput = total_mb / total_time if total_time > 0 else 0.0
@@ -94,9 +105,12 @@ class MemoryWorkload(Workload):
             "avg_access_time": avg_access_time,
             "min_time": min_time,
             "max_time": max_time,
+            "p50_time": p50_time,
+            "p95_time": p95_time,
             "latency_spread": latency_spread,
             "throughput_mb_s": throughput,
             "stability": stability,
             "stop_reason": stop_reason,
+            "touch_passes": self.touch_passes,
             "checksum": sum(checksums),
         }

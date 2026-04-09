@@ -310,11 +310,30 @@ def _available_accelerators():
     return accelerators
 
 
+def _accelerator_hints(gpu_devices):
+    hints = set()
+    system_name = platform.system()
+    arch = platform.machine().lower()
+    joined = " ".join(gpu_devices).lower()
+
+    if system_name == "Darwin" and arch == "arm64" and any("apple" in device.lower() for device in gpu_devices):
+        hints.add("METAL")
+
+    if "nvidia" in joined:
+        hints.add("CUDA")
+
+    if any(token in joined for token in ("amd", "radeon", "instinct")):
+        hints.add("ROCM")
+
+    return sorted(hints)
+
+
 def get_system_info():
     physical_cores, logical_cores = _cpu_counts()
     memory = get_memory_snapshot()
     gpu_devices = _gpu_devices()
     accelerators = _available_accelerators()
+    accelerator_hints = _accelerator_hints(gpu_devices)
 
     return {
         "hostname": socket.gethostname(),
@@ -334,4 +353,5 @@ def get_system_info():
         "gpu_devices": gpu_devices,
         "gpu_count": len(gpu_devices),
         "accelerators": accelerators,
+        "accelerator_hints": accelerator_hints,
     }
