@@ -1,17 +1,20 @@
-import time
 from statistics import mean
+from time import perf_counter
 
-from brutebench.workloads.base import Workload
 from brutebench.utils.logger import log
+from brutebench.workloads.base import Workload
 
 
 class GPUWorkload(Workload):
     name = "gpu"
 
-    def __init__(self, rounds=4, size=1024, iters=80):
+    def __init__(self, rounds=3, size=128, iters=4):
         self.rounds = rounds
         self.size = size
         self.iters = iters
+
+    def _ops_per_run(self, size, iterations):
+        return (2 * (size ** 3) * iterations) / 1_000_000_000
 
     def _run_mlx(self):
         try:
@@ -21,29 +24,28 @@ class GPUWorkload(Workload):
             return None
 
         try:
-            dev = mx.default_device()
+            device = mx.default_device()
             times = []
 
-            for r in range(self.rounds):
-                log(f"Round {r+1}/{self.rounds} · MLX · {dev}")
+            for round_index in range(self.rounds):
+                log(f"Round {round_index + 1}/{self.rounds} · MLX · {device}")
 
                 a = mx.random.normal((self.size, self.size), dtype=mx.float32)
                 b = mx.random.normal((self.size, self.size), dtype=mx.float32)
+                warmup = mx.matmul(a, b)
+                mx.eval(warmup)
 
-                warm = mx.matmul(a, b)
-                mx.eval(warm)
-
-                start = time.time()
+                start = perf_counter()
                 c = a
                 for _ in range(self.iters):
                     c = mx.matmul(c, b)
                 mx.eval(c)
 
-                duration = time.time() - start
+                duration = perf_counter() - start
                 times.append(duration)
                 log(f"  {duration:.2f}s")
 
-            return times
+            return times, self.size, self.iters, "MLX", True
         except Exception as e:
             log(f"MLX execution failed: {e}")
             return None
@@ -58,28 +60,65 @@ class GPUWorkload(Workload):
             return None
 
         import torch
+
         device = torch.device("cuda")
         times = []
 
-        for r in range(self.rounds):
-            log(f"Round {r+1}/{self.rounds} · CUDA · {device}")
+        for round_index in range(self.rounds):
+            log(f"Round {round_index + 1}/{self.rounds} · CUDA · {device}")
             a = torch.randn(self.size, self.size, device=device, dtype=torch.float32)
             b = torch.randn(self.size, self.size, device=device, dtype=torch.float32)
 
-            warm = torch.matmul(a, b)
+            _ = torch.matmul(a, b)
             torch.cuda.synchronize()
 
-            start = time.time()
+            start = perf_counter()
             c = a
             for _ in range(self.iters):
                 c = torch.matmul(c, b)
             torch.cuda.synchronize()
 
-            duration = time.time() - start
+            duration = perf_counter() - start
             times.append(duration)
             log(f"  {duration:.2f}s")
 
-        return times
+        return times, self.size, self.iters, "CUDA", True
+
+    def _run_mps(self):
+        try:
+            import torch
+            if not getattr(torch.backends, "mps", None) or not torch.backends.mps.is_available():
+                return None
+        except Exception as e:
+            log(f"MPS import failed: {e}")
+            return None
+
+        import torch
+
+        device = torch.device("mps")
+        times = []
+
+        for round_index in range(self.rounds):
+            log(f"Round {round_index + 1}/{self.rounds} · MPS · {device}")
+            a = torch.randn(self.size, self.size, device=device, dtype=torch.float32)
+            b = torch.randn(self.size, self.size, device=device, dtype=torch.float32)
+
+            _ = torch.matmul(a, b)
+            if hasattr(torch.mps, "synchronize"):
+                torch.mps.synchronize()
+
+            start = perf_counter()
+            c = a
+            for _ in range(self.iters):
+                c = torch.matmul(c, b)
+            if hasattr(torch.mps, "synchronize"):
+                torch.mps.synchronize()
+
+            duration = perf_counter() - start
+            times.append(duration)
+            log(f"  {duration:.2f}s")
+
+        return times, self.size, self.iters, "MPS", True
 
     def _run_numpy(self):
         try:
@@ -88,84 +127,97 @@ class GPUWorkload(Workload):
             log(f"NumPy import failed: {e}")
             return None
 
+        size = max(48, self.size)
+        iterations = max(2, self.iters)
         times = []
-        cpu_size = max(512, self.size // 2)
-        cpu_iters = max(30, self.iters // 2)
 
-        for r in range(self.rounds):
-            log(f"Round {r+1}/{self.rounds} · CPU fallback")
-            a = np.random.randn(cpu_size, cpu_size).astype("float32")
-            b = np.random.randn(cpu_size, cpu_size).astype("float32")
+        for round_index in range(self.rounds):
+            log(f"Round {round_index + 1}/{self.rounds} · NumPy fallback")
+            a = np.random.randn(size, size).astype("float32")
+            b = np.random.randn(size, size).astype("float32")
 
             _ = np.matmul(a, b)
 
-            start = time.time()
+            start = perf_counter()
             c = a
-            for _ in range(cpu_iters):
+            for _ in range(iterations):
                 c = np.matmul(c, b)
 
-            duration = time.time() - start
+            duration = perf_counter() - start
             times.append(duration)
             log(f"  {duration:.2f}s")
 
-        return times
+        return times, size, iterations, "NumPy", False
+
+    def _run_python(self):
+        size = max(24, min(48, self.size // 2))
+        iterations = max(3, min(6, self.iters + 1))
+        times = []
+
+        base_a = [[((row + col) % 11) / 10 for col in range(size)] for row in range(size)]
+        base_b = [[((row * 2 + col) % 13) / 10 for col in range(size)] for row in range(size)]
+        base_bt = [list(column) for column in zip(*base_b)]
+
+        for round_index in range(self.rounds):
+            log(f"Round {round_index + 1}/{self.rounds} · Python fallback")
+            start = perf_counter()
+            checksum = 0.0
+            for _ in range(iterations):
+                for row in base_a:
+                    for col in base_bt:
+                        checksum += sum(left * right for left, right in zip(row, col))
+            duration = perf_counter() - start
+            times.append(duration)
+            log(f"  {duration:.2f}s | checksum {int(checksum)}")
+
+        return times, size, iterations, "Python", False
 
     def run(self):
         log("Starting GPU workload")
 
-        backend = None
-        times = None
+        result = None
 
-        try:
-            times = self._run_mlx()
-            if times is not None:
-                backend = "MLX"
-        except Exception as e:
-            log(f"MLX failed: {e}")
-            times = None
-
-        if times is None:
+        for runner in (
+            self._run_mlx,
+            self._run_cuda,
+            self._run_mps,
+            self._run_numpy,
+            self._run_python,
+        ):
             try:
-                times = self._run_cuda()
-                if times is not None:
-                    backend = "CUDA"
+                result = runner()
             except Exception as e:
-                log(f"CUDA failed: {e}")
-                times = None
+                log(f"{runner.__name__} failed: {e}")
+                result = None
 
-        if times is None:
-            try:
-                times = self._run_numpy()
-                if times is not None:
-                    backend = "CPU"
-            except Exception as e:
-                log(f"CPU fallback failed: {e}")
-                times = None
+            if result is not None:
+                break
 
-        if times is None:
+        if result is None:
             return {
                 "avg_time": 0,
                 "min_time": 0,
                 "max_time": 0,
                 "backend": "NONE",
                 "rounds": 0,
+                "avg_gflops": 0.0,
+                "accelerated": False,
+                "size": 0,
+                "iters": 0,
             }
 
-        avg = mean(times)
-
-        if backend == "CPU" and avg < 0.25:
-            avg = 0.25
-
-        if backend == "MLX" and avg < 0.15:
-            avg = 0.15
-
-        if backend == "CUDA" and avg < 0.12:
-            avg = 0.12
+        times, size, iterations, backend, accelerated = result
+        avg_time = mean(times)
+        gflops = self._ops_per_run(size, iterations) / avg_time if avg_time > 0 else 0.0
 
         return {
-            "avg_time": avg,
+            "avg_time": avg_time,
             "min_time": min(times),
             "max_time": max(times),
             "backend": backend,
             "rounds": len(times),
+            "avg_gflops": gflops,
+            "accelerated": accelerated,
+            "size": size,
+            "iters": iterations,
         }

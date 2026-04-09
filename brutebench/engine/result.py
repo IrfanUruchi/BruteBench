@@ -5,7 +5,7 @@ from pathlib import Path
 
 class BenchmarkResult:
     def __init__(self):
-        self.timestamp = int(time.time())
+        self.timestamp = int(time.time() * 1000)
         self.data = {}
 
     def add(self, key, value):

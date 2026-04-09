@@ -1,72 +1,102 @@
-import time
-import psutil
-from statistics import mean
+from statistics import mean, pstdev
+from time import perf_counter
 
-from brutebench.workloads.base import Workload
-MEMORY_CHUNK_MB = 100
+from brutebench.system.info import get_memory_snapshot
 from brutebench.utils.logger import log
+from brutebench.workloads.base import Workload
 
 
 class MemoryWorkload(Workload):
     name = "memory"
 
-    def __init__(self, max_percent=None):
-        self.max_percent = max_percent or 70
+    def __init__(self, target_mb=256, chunk_mb=16, floor_mb=384):
+        self.target_mb = max(16, target_mb)
+        self.chunk_mb = max(4, chunk_mb)
+        self.floor_mb = max(128, floor_mb)
 
     def run(self):
-        log("Starting memory stress test")
+        log(
+            f"Starting memory workload target={self.target_mb}MB "
+            f"chunk={self.chunk_mb}MB"
+        )
 
         allocated = []
-        chunk_size = MEMORY_CHUNK_MB * 1024 * 1024
-        times = []
+        allocation_times = []
+        access_times = []
+        checksums = []
+        chunk_size = self.chunk_mb * 1024 * 1024
+        target_bytes = self.target_mb * 1024 * 1024
+        allocated_bytes = 0
+        stop_reason = "completed"
 
-        while True:
-            mem = psutil.virtual_memory()
-            usage = mem.percent
-
-            if usage >= self.max_percent:
-                log(f"Reached safe memory limit: {usage}%")
+        while allocated_bytes < target_bytes:
+            snapshot = get_memory_snapshot()
+            available_bytes = snapshot.get("available", 0)
+            threshold = (self.floor_mb + self.chunk_mb) * 1024 * 1024
+            if available_bytes and available_bytes < threshold:
+                stop_reason = "safety_floor"
+                log("Stopping before low-memory threshold")
                 break
 
-            if len(allocated) > 200:
-                log("Hard limit reached — stopping")
-                break
-
-            start = time.time()
+            size = min(chunk_size, target_bytes - allocated_bytes)
+            start = perf_counter()
 
             try:
-                block = bytearray(chunk_size)
+                block = bytearray(size)
 
-                for i in range(0, chunk_size, 4096):
-                    block[i] = 1
+                for index in range(0, size, 4096):
+                    block[index] = (index // 4096) % 251
 
                 allocated.append(block)
-
             except MemoryError:
-                log("MemoryError — stopping")
+                stop_reason = "memory_error"
+                log("Memory allocation failed safely")
                 break
 
-            duration = time.time() - start
+            allocation_duration = perf_counter() - start
+            allocation_times.append(allocation_duration)
 
-            mem = psutil.virtual_memory()
-            usage = mem.percent
+            start = perf_counter()
+            checksum = 0
+            for pass_index in range(4):
+                for index in range(0, size, 4096):
+                    checksum ^= block[index]
+                    block[index] = (block[index] + pass_index + 7) % 251
+            access_duration = perf_counter() - start
 
-            times.append(duration)
+            access_times.append(access_duration)
+            checksums.append(checksum)
+            allocated_bytes += size
 
-            log(f"+{MEMORY_CHUNK_MB}MB | {duration:.3f}s | usage: {usage:.1f}%")
+            log(
+                f"+{size // (1024 * 1024)}MB | alloc {allocation_duration:.4f}s "
+                f"| touch {access_duration:.4f}s"
+            )
 
-            time.sleep(0.05)
-
-        avg_time = mean(times) if times else 0
-        min_time = min(times) if times else 0
-        max_time = max(times) if times else 0
+        combined_times = allocation_times + access_times
+        avg_alloc_time = mean(allocation_times) if allocation_times else 0.0
+        avg_access_time = mean(access_times) if access_times else 0.0
+        min_time = min(combined_times) if combined_times else 0.0
+        max_time = max(combined_times) if combined_times else 0.0
         latency_spread = (max_time / min_time) if min_time > 0 else 1.0
+        total_time = sum(combined_times)
+        total_mb = allocated_bytes / (1024 * 1024)
+        throughput = total_mb / total_time if total_time > 0 else 0.0
+        avg_combined = mean(combined_times) if combined_times else 0.0
+        variability = (pstdev(combined_times) / avg_combined) if len(combined_times) > 1 and avg_combined else 0.0
+        stability = max(0.0, min(100.0, 100.0 - (variability * 100.0)))
 
         return {
             "chunks": len(allocated),
-            "total_mb": len(allocated) * MEMORY_CHUNK_MB,
-            "avg_alloc_time": avg_time,
+            "target_mb": self.target_mb,
+            "total_mb": round(total_mb, 2),
+            "avg_alloc_time": avg_alloc_time,
+            "avg_access_time": avg_access_time,
             "min_time": min_time,
             "max_time": max_time,
             "latency_spread": latency_spread,
+            "throughput_mb_s": throughput,
+            "stability": stability,
+            "stop_reason": stop_reason,
+            "checksum": sum(checksums),
         }
