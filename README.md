@@ -8,6 +8,8 @@ Instead of relying on synthetic benchmarks, it measures practical performance by
 ## Version
 
 **v1.0.0 — Initial release (31 March 2026)**
+**v1.0.1 — Updated release (04 April 2026)**
+**v1.0.2 — Third release (27 April 2026)**
 
 ---
 
