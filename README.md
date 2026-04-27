@@ -74,6 +74,48 @@ pip install -e .
 
 ---
 
+
+## GPU Acceleration (Optional but Recommended)
+
+BruteBench supports GPU acceleration for AI and compute workloads.
+
+Depending on your system, you may need to install additional libraries:
+
+### NVIDIA (CUDA)
+For NVIDIA GPUs, install PyTorch with CUDA support:
+
+```bash
+pip install torch torchvision torchaudio
+```
+
+
+Verify CUDA is working:
+
+
+```python
+import torch
+print(torch.cuda.is_available())
+```
+
+Expected output: True
+
+### Apple Silicon (MLX / MPS)
+
+For Apple Silicon devices:
+
+```bash
+pip install mlx
+pip install torch
+```
+
+### Fallback Behavior
+
+If GPU runtimes are not available, BruteBench will automatically fall back to a CPU-based NumPy implementation.
+
+In this case, GPU scores will not reflect actual GPU performance.
+
+---
+
 ## Usage
 
 Run full benchmark:
