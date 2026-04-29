@@ -137,25 +137,12 @@ brutebench --gpu
 ## Example 
 
 
-```bash
-=== FINAL SCORE ===
-Score    586
-Rating   LIGHT DEV
-
-=== USE CASE PERFORMANCE ===
-Mobile Dev        GOOD    (782)
-Backend Dev       GOOD    (781)
-Systems           GOOD    (816)
-Data / Pipelines  GOOD    (736)
-DevOps            GOOD    (759)
-AI / ML           LIMITED (667)
-
-=== SYSTEM INSIGHTS ===
-Strongest Area: Systems
-Bottleneck: AI
-Suggestion: Increase RAM or GPU capacity for AI workloads
-```
-(for m3 pro)
+CPU / System                           Score   Rating
+------------------------------------------------------
+Intel Core Ultra 9 275hx (ROG Strix G16)     ~794    HIGH PERFORMANCE
+Apple M3 Pro (MacBook Pro 14")         ~580–700+   STRONG DEV
+AMD Ryzen 7 7735HS (Lenovo Ideapad)    ~560    DEV READY
+Intel i5-1145G7 (Dell Latitude 5420)   ~525    LIGHT DEV (plugged)
 
 --- 
 
