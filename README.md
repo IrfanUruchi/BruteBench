@@ -136,13 +136,14 @@ brutebench --gpu
 
 ## Example 
 
+## Real System Examples
 
-CPU / System                           Score   Rating
-------------------------------------------------------
-Intel Core Ultra 9 275hx (ROG Strix G16)     ~794    HIGH PERFORMANCE
-Apple M3 Pro (MacBook Pro 14")         ~580–700+   STRONG DEV
-AMD Ryzen 7 7735HS (Lenovo Ideapad)    ~560    DEV READY
-Intel i5-1145G7 (Dell Latitude 5420)   ~525    LIGHT DEV (plugged)
+| CPU / System                              | Score        | Rating                    |
+|-------------------------------------------|-------------|---------------------------|
+| Intel Core Ultra 9 275hx (ROG Strix G16)  | ~794        | HIGH PERFORMANCE          |
+| Apple M3 Pro (MacBook Pro 14")            | ~580–700+   | STRONG DEV                |
+| AMD Ryzen 7 7735HS (Lenovo Ideapad)       | ~560        | DEV READY                 |
+| Intel i5-1145G7 (Dell Latitude 5420)      | ~525        | LIGHT DEV (plugged)       |
 
 --- 
 
